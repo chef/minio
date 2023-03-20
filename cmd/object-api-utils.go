@@ -191,7 +191,7 @@ func checkObjectNameForLengthAndSlash(bucket, object string) error {
 	if runtime.GOOS == globalWindowsOSName {
 		// Explicitly disallowed characters on windows.
 		// Avoids most problematic names.
-		if strings.ContainsAny(object, `:*?"|<>`) {
+		if strings.ContainsAny(object, `\:*?"|<>`) {
 			return ObjectNameInvalid{
 				Bucket: bucket,
 				Object: object,
@@ -790,7 +790,7 @@ func (g *GetObjectReader) Close() error {
 	return nil
 }
 
-//SealMD5CurrFn seals md5sum with object encryption key and returns sealed
+// SealMD5CurrFn seals md5sum with object encryption key and returns sealed
 // md5sum
 type SealMD5CurrFn func([]byte) []byte
 
