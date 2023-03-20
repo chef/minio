@@ -191,7 +191,7 @@ func checkObjectNameForLengthAndSlash(bucket, object string) error {
 	if runtime.GOOS == globalWindowsOSName {
 		// Explicitly disallowed characters on windows.
 		// Avoids most problematic names.
-		if strings.ContainsAny(object, `:*?"|<>`) {
+		if strings.ContainsAny(object, `\:*?"|<>`) {
 			return ObjectNameInvalid{
 				Bucket: bucket,
 				Object: object,
