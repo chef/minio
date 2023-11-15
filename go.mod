@@ -69,6 +69,7 @@ require (
 	github.com/prometheus/client_golang v1.11.0
 	github.com/prometheus/client_model v0.2.0
 	github.com/prometheus/procfs v0.7.3
+	github.com/rjeczalik/notify v0.9.3 // indirect
 	github.com/rs/cors v1.7.0
 	github.com/rs/dnscache v0.0.0-20210201191234-295bba877686
 	github.com/secure-io/sio-go v0.3.1
