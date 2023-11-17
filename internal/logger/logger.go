@@ -268,14 +268,6 @@ func getTrace(traceLevel int) []string {
 	return trace
 }
 
-// Return the highway hash of the passed string
-func hashString(input string) string {
-	defer loggerHighwayHasher.Reset()
-	loggerHighwayHasher.Write([]byte(input))
-	checksum := loggerHighwayHasher.Sum(nil)
-	return hex.EncodeToString(checksum)
-}
-
 // Kind specifies the kind of error log
 type Kind string
 

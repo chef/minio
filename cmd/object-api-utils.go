@@ -169,7 +169,7 @@ func IsValidObjectPrefix(object string) bool {
 	if strings.Contains(object, `//`) {
 		return false
 	}
-	return true
+	return !strings.ContainsRune(object, 0)
 }
 
 // checkObjectNameForLengthAndSlash -check for the validity of object name length and prefis as slash
