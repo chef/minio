@@ -261,12 +261,11 @@ func getTrace(traceLevel int) []string {
 	return trace
 }
 
-// Return the highway hash of the passed string
-func hashString(input string) string {
-	defer loggerHighwayHasher.Reset()
-	loggerHighwayHasher.Write([]byte(input))
-	checksum := loggerHighwayHasher.Sum(nil)
-	return hex.EncodeToString(checksum)
+// HashString - return the highway hash of the passed string
+func HashString(input string) string {
+	hh, _ := highwayhash.New(magicHighwayHash256Key)
+	hh.Write([]byte(input))
+	return hex.EncodeToString(hh.Sum(nil))
 }
 
 // Kind specifies the kind of error log
@@ -371,9 +370,9 @@ func logIf(ctx context.Context, err error, errKind ...interface{}) {
 	}
 
 	if anonFlag {
-		entry.API.Args.Bucket = hashString(entry.API.Args.Bucket)
-		entry.API.Args.Object = hashString(entry.API.Args.Object)
-		entry.RemoteHost = hashString(entry.RemoteHost)
+		entry.API.Args.Bucket = HashString(entry.API.Args.Bucket)
+		entry.API.Args.Object = HashString(entry.API.Args.Object)
+		entry.RemoteHost = HashString(entry.RemoteHost)
 		entry.Trace.Message = reflect.TypeOf(err).String()
 		entry.Trace.Variables = make(map[string]interface{})
 	}
