@@ -23,6 +23,7 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/eclipse/paho.mqtt.golang v1.3.0
 	github.com/elastic/go-elasticsearch/v7 v7.12.0
+	github.com/emicklei/go-restful v2.16.0+incompatible // indirect
 	github.com/fatih/color v1.13.0
 	github.com/go-ldap/ldap/v3 v3.2.4
 	github.com/go-ole/go-ole v1.2.6 // indirect
