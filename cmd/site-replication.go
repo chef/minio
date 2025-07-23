@@ -389,7 +389,7 @@ func (c *SiteReplicationSys) AddPeerClusters(ctx context.Context, sites []madmin
 		}
 	}
 
-	joinReq := madmin.SRInternalJoinReq{
+	joinReq := madmin.SRPeerJoinReq{
 		SvcAcctAccessKey: svcCred.AccessKey,
 		SvcAcctSecretKey: svcCred.SecretKey,
 		Peers:            make(map[string]madmin.PeerInfo),
@@ -414,7 +414,7 @@ func (c *SiteReplicationSys) AddPeerClusters(ctx context.Context, sites []madmin
 			break
 		}
 		joinReq.SvcAcctParent = v.AccessKey
-		err = admClient.SRInternalJoin(ctx, joinReq)
+		err = admClient.SRPeerJoin(ctx, joinReq)
 		if err != nil {
 			peerAddErr = errSRPeerResp(fmt.Errorf("unable to link with peer %s: %w", v.Name, err))
 			break
@@ -466,7 +466,7 @@ func (c *SiteReplicationSys) AddPeerClusters(ctx context.Context, sites []madmin
 
 // InternalJoinReq - internal API handler to respond to a peer cluster's request
 // to join.
-func (c *SiteReplicationSys) InternalJoinReq(ctx context.Context, arg madmin.SRInternalJoinReq) SRError {
+func (c *SiteReplicationSys) InternalJoinReq(ctx context.Context, arg madmin.SRPeerJoinReq) SRError {
 	if c.enabled {
 		return errSRInvalidRequest(errSRCannotJoin)
 	}
@@ -516,12 +516,47 @@ func (c *SiteReplicationSys) InternalJoinReq(ctx context.Context, arg madmin.SRI
 // used to validate that all peers have the same IDP.
 func (c *SiteReplicationSys) GetIDPSettings(ctx context.Context) madmin.IDPSettings {
 	return madmin.IDPSettings{
-		IsLDAPEnabled:          globalLDAPConfig.Enabled,
-		LDAPUserDNSearchBase:   globalLDAPConfig.UserDNSearchBaseDN,
-		LDAPUserDNSearchFilter: globalLDAPConfig.UserDNSearchFilter,
-		LDAPGroupSearchBase:    globalLDAPConfig.GroupSearchBaseDistName,
-		LDAPGroupSearchFilter:  globalLDAPConfig.GroupSearchFilter,
+		LDAP: madmin.LDAPSettings{
+			IsLDAPEnabled:          globalLDAPConfig.Enabled,
+			LDAPUserDNSearchBase:   globalLDAPConfig.UserDNSearchBaseDN,
+			LDAPUserDNSearchFilter: globalLDAPConfig.UserDNSearchFilter,
+			LDAPGroupSearchBase:    globalLDAPConfig.GroupSearchBaseDistName,
+			LDAPGroupSearchFilter:  globalLDAPConfig.GroupSearchFilter,
+		},
 	}
+}
+
+// compareIDPSettings compares two IDPSettings structs for equality
+func compareIDPSettings(a, b madmin.IDPSettings) bool {
+	// Compare LDAP settings
+	if a.LDAP != b.LDAP {
+		return false
+	}
+
+	// Compare OpenID settings
+	if a.OpenID.Enabled != b.OpenID.Enabled ||
+		a.OpenID.Region != b.OpenID.Region {
+		return false
+	}
+
+	// Compare ClaimProvider
+	if a.OpenID.ClaimProvider != b.OpenID.ClaimProvider {
+		return false
+	}
+
+	// Compare Roles maps
+	if len(a.OpenID.Roles) != len(b.OpenID.Roles) {
+		return false
+	}
+
+	for key, valueA := range a.OpenID.Roles {
+		valueB, exists := b.OpenID.Roles[key]
+		if !exists || valueA != valueB {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (c *SiteReplicationSys) validateIDPSettings(ctx context.Context, peers []madmin.PeerSite, selfIdx int) (bool, SRError) {
@@ -537,7 +572,7 @@ func (c *SiteReplicationSys) validateIDPSettings(ctx context.Context, peers []ma
 			return false, errSRPeerResp(fmt.Errorf("unable to create admin client for %s: %w", v.Name, err))
 		}
 
-		is, err := admClient.SRInternalGetIDPSettings(ctx)
+		is, err := admClient.SRPeerGetIDPSettings(ctx)
 		if err != nil {
 			return false, errSRPeerResp(fmt.Errorf("unable to fetch IDP settings from %s: %v", v.Name, err))
 		}
@@ -545,12 +580,12 @@ func (c *SiteReplicationSys) validateIDPSettings(ctx context.Context, peers []ma
 	}
 
 	for _, v := range s {
-		if !v.IsLDAPEnabled {
+		if !v.LDAP.IsLDAPEnabled {
 			return false, SRError{}
 		}
 	}
 	for i := 1; i < len(s); i++ {
-		if s[i] != s[0] {
+		if !compareIDPSettings(s[i], s[0]) {
 			return false, SRError{}
 		}
 	}
@@ -613,7 +648,7 @@ func (c *SiteReplicationSys) MakeBucketHook(ctx context.Context, bucket string, 
 				return err
 			}
 
-			err = admClient.SRInternalBucketOps(ctx, bucket, madmin.MakeWithVersioningBktOp, optsMap)
+			err = admClient.SRPeerBucketOps(ctx, bucket, madmin.MakeWithVersioningBktOp, optsMap)
 			logger.LogIf(ctx, c.annotatePeerErr(p.Name, "MakeWithVersioning", err))
 			return err
 		},
@@ -641,7 +676,7 @@ func (c *SiteReplicationSys) MakeBucketHook(ctx context.Context, bucket string, 
 				return err
 			}
 
-			err = admClient.SRInternalBucketOps(ctx, bucket, madmin.ConfigureReplBktOp, nil)
+			err = admClient.SRPeerBucketOps(ctx, bucket, madmin.ConfigureReplBktOp, nil)
 			logger.LogIf(ctx, c.annotatePeerErr(p.Name, "ConfigureRepl", err))
 			return err
 		},
@@ -678,7 +713,7 @@ func (c *SiteReplicationSys) DeleteBucketHook(ctx context.Context, bucket string
 			return wrapSRErr(err)
 		}
 
-		err = admClient.SRInternalBucketOps(ctx, bucket, op, nil)
+		err = admClient.SRPeerBucketOps(ctx, bucket, op, nil)
 		logger.LogIf(ctx, c.annotatePeerErr(p.Name, "DeleteBucket", err))
 		return err
 	})
@@ -944,8 +979,8 @@ func (c *SiteReplicationSys) IAMChangeHook(ctx context.Context, item madmin.SRIA
 			return wrapSRErr(err)
 		}
 
-		err = admClient.SRInternalReplicateIAMItem(ctx, item)
-		logger.LogIf(ctx, c.annotatePeerErr(p.Name, "SRInternalReplicateIAMItem", err))
+		err = admClient.SRPeerReplicateIAMItem(ctx, item)
+		logger.LogIf(ctx, c.annotatePeerErr(p.Name, "SRPeerReplicateIAMItem", err))
 		return err
 	})
 	return cErr.summaryErr
@@ -1160,8 +1195,8 @@ func (c *SiteReplicationSys) BucketMetaHook(ctx context.Context, item madmin.SRB
 			return wrapSRErr(err)
 		}
 
-		err = admClient.SRInternalReplicateBucketMeta(ctx, item)
-		logger.LogIf(ctx, c.annotatePeerErr(p.Name, "SRInternalReplicateBucketMeta", err))
+		err = admClient.SRPeerReplicateBucketMeta(ctx, item)
+		logger.LogIf(ctx, c.annotatePeerErr(p.Name, "SRPeerReplicateBucketMeta", err))
 		return err
 	})
 	return cErr.summaryErr

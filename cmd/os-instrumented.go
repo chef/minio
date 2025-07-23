@@ -52,10 +52,8 @@ func osTrace(s osMetric, startTime time.Time, duration time.Duration, path strin
 		Time:      startTime,
 		NodeName:  globalLocalNodeName,
 		FuncName:  "os." + s.String(),
-		OSStats: madmin.TraceOSStats{
-			Duration: duration,
-			Path:     path,
-		},
+		Duration:  duration,
+		Path:      path,
 	}
 }
 

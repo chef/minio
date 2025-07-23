@@ -338,7 +338,7 @@ func (fs *FSObjects) NSScanner(ctx context.Context, bf *bloomFilter, updates cha
 		logger.LogIf(ctx, totalCache.save(ctx, fs, dataUsageCacheName))
 		cloned := totalCache.clone()
 		updates <- cloned.dui(dataUsageRoot, buckets)
-		enforceFIFOQuotaBucket(ctx, fs, b.Name, cloned.bucketUsageInfo(b.Name))
+		// enforceFIFOQuotaBucket(ctx, fs, b.Name, cloned.bucketUsageInfo(b.Name))
 	}
 
 	return nil

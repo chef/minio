@@ -130,7 +130,7 @@ func Trace(f http.HandlerFunc, logBody bool, w http.ResponseWriter, r *http.Requ
 	r.Body = reqBodyRecorder
 
 	now := time.Now().UTC()
-	t := madmin.TraceInfo{TraceType: madmin.TraceHTTP, FuncName: name, Time: now}
+	t := madmin.TraceInfo{TraceType: madmin.TraceInternal, FuncName: name, Time: now}
 
 	t.NodeName = r.Host
 	if globalIsDistErasure {
@@ -184,10 +184,10 @@ func Trace(f http.HandlerFunc, logBody bool, w http.ResponseWriter, r *http.Requ
 		rs.StatusCode = http.StatusOK
 	}
 
-	t.ReqInfo = rq
-	t.RespInfo = rs
+	t.HTTP.ReqInfo = rq
+	t.HTTP.RespInfo = rs
 
-	t.CallStats = madmin.TraceCallStats{
+	t.HTTP.CallStats = madmin.TraceCallStats{
 		Latency:         rs.Time.Sub(rw.StartTime),
 		InputBytes:      reqBodyRecorder.Size(),
 		OutputBytes:     rw.Size(),

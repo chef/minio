@@ -2744,23 +2744,23 @@ func (sys *IAMSys) IsAllowed(args iampolicy.Args) bool {
 func setDefaultCannedPolicies(policies map[string]iampolicy.Policy) {
 	_, ok := policies["writeonly"]
 	if !ok {
-		policies["writeonly"] = iampolicy.WriteOnly
+		policies["writeonly"] = iampolicy.DefaultPolicies[2].Definition
 	}
 	_, ok = policies["readonly"]
 	if !ok {
-		policies["readonly"] = iampolicy.ReadOnly
+		policies["readonly"] = iampolicy.DefaultPolicies[1].Definition
 	}
 	_, ok = policies["readwrite"]
 	if !ok {
-		policies["readwrite"] = iampolicy.ReadWrite
+		policies["readwrite"] = iampolicy.DefaultPolicies[0].Definition
 	}
 	_, ok = policies["diagnostics"]
 	if !ok {
-		policies["diagnostics"] = iampolicy.AdminDiagnostics
+		policies["diagnostics"] = iampolicy.DefaultPolicies[3].Definition
 	}
 	_, ok = policies["consoleAdmin"]
 	if !ok {
-		policies["consoleAdmin"] = iampolicy.Admin
+		policies["consoleAdmin"] = iampolicy.DefaultPolicies[4].Definition
 	}
 }
 
