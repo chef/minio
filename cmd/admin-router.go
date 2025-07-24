@@ -230,11 +230,11 @@ func registerAdminRouter(router *mux.Router, enableConfigOps bool) {
 
 		if !globalIsGateway {
 			// Keep obdinfo for backward compatibility with mc
-			adminRouter.Methods(http.MethodGet).Path(adminVersion + "/obdinfo").
-				HandlerFunc(gz(httpTraceHdrs(adminAPI.HealthInfoHandler)))
-			// -- Health API --
-			adminRouter.Methods(http.MethodGet).Path(adminVersion + "/healthinfo").
-				HandlerFunc(gz(httpTraceHdrs(adminAPI.HealthInfoHandler)))
+			// adminRouter.Methods(http.MethodGet).Path(adminVersion + "/obdinfo").
+			// 	HandlerFunc(gz(httpTraceHdrs(adminAPI.HealthInfoHandler)))
+			// // -- Health API --
+			// adminRouter.Methods(http.MethodGet).Path(adminVersion + "/healthinfo").
+			// 	HandlerFunc(gz(httpTraceHdrs(adminAPI.HealthInfoHandler)))
 			adminRouter.Methods(http.MethodGet).Path(adminVersion + "/bandwidth").
 				HandlerFunc(gz(httpTraceHdrs(adminAPI.BandwidthMonitorHandler)))
 		}

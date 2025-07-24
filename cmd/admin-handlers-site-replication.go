@@ -81,7 +81,7 @@ func (a adminAPIHandlers) SRInternalJoin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var joinArg madmin.SRInternalJoinReq
+	var joinArg madmin.SRPeerJoinReq
 	errCode := readJSONBody(ctx, r.Body, &joinArg, cred.SecretKey)
 	if errCode != ErrNone {
 		writeErrorResponseJSON(ctx, w, errorCodes.ToAPIErr(errCode), r.URL)
