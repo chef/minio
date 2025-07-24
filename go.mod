@@ -1,6 +1,6 @@
 module github.com/minio/minio
 
-go 1.24
+go 1.24.4
 
 require (
 	cloud.google.com/go/storage v1.50.0

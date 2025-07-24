@@ -32,6 +32,7 @@ func TestPolicySysIsAllowed(t *testing.T) {
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.GetBucketLocationAction),
@@ -39,6 +40,7 @@ func TestPolicySysIsAllowed(t *testing.T) {
 				condition.NewFunctions(),
 			),
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.PutObjectAction),
@@ -165,6 +167,7 @@ func TestPolicyToBucketAccessPolicy(t *testing.T) {
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.GetBucketLocationAction, policy.ListBucketAction),
@@ -172,6 +175,7 @@ func TestPolicyToBucketAccessPolicy(t *testing.T) {
 				condition.NewFunctions(),
 			),
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.GetObjectAction),
@@ -200,6 +204,7 @@ func TestPolicyToBucketAccessPolicy(t *testing.T) {
 		Version: "12-10-2012",
 		Statements: []policy.Statement{
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.PutObjectAction),
@@ -245,6 +250,7 @@ func TestBucketAccessPolicyToPolicy(t *testing.T) {
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.GetBucketLocationAction, policy.ListBucketAction),
@@ -252,6 +258,7 @@ func TestBucketAccessPolicyToPolicy(t *testing.T) {
 				condition.NewFunctions(),
 			),
 			policy.NewStatement(
+				"",
 				policy.Allow,
 				policy.NewPrincipal("*"),
 				policy.NewActionSet(policy.GetObjectAction),
