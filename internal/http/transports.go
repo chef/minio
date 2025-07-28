@@ -57,7 +57,7 @@ type ConnSettings struct {
 func (s ConnSettings) getDefaultTransport() *http.Transport {
 	dialContext := s.DialContext
 	if dialContext == nil {
-		dialContext = DialContextWithDNSCache(s.DNSCache, NewInternodeDialContext(s.DialTimeout, s.TCPOptions))
+		dialContext = DialContextWithDNSCache(s.DNSCache, NewInternodeDialContext(s.DialTimeout))
 	}
 
 	tlsClientConfig := tls.Config{
