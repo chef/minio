@@ -2132,7 +2132,7 @@ func checkConnection(endpointStr string, timeout time.Duration) error {
 
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           xhttp.NewCustomDialContext(timeout, xhttp.TCPOptions{}),
+		DialContext:           xhttp.NewCustomDialContext(timeout),
 		ResponseHeaderTimeout: 5 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 5 * time.Second,
