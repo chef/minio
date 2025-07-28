@@ -28,6 +28,7 @@ import (
 )
 
 // TODO: if possible implement for non-linux platforms, not a priority at the moment
+//
 //nolint:deadcode
 func setTCPParameters(string, string, syscall.RawConn) error {
 	return nil
@@ -40,7 +41,7 @@ type DialContext func(ctx context.Context, network, address string) (net.Conn, e
 var NewInternodeDialContext = NewCustomDialContext
 
 // NewCustomDialContext configures a custom dialer for internode communications
-func NewCustomDialContext(dialTimeout time.Duration) DialContext {
+func NewCustomDialContext(dialTimeout time.Duration, _ TCPOptions) DialContext {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialer := &net.Dialer{
 			Timeout: dialTimeout,

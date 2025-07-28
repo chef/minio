@@ -47,6 +47,7 @@ require (
 	github.com/minio/kes v0.22.3
 	github.com/minio/madmin-go v1.7.3
 	github.com/minio/madmin-go/v2 v2.2.0
+	github.com/minio/mc v0.0.0-20230526175537-0fac0e006eae
 	github.com/minio/minio-go/v7 v7.0.55-0.20230525060734-b7836f021bfb
 	github.com/minio/parquet-go v1.0.0
 	github.com/minio/pkg v1.6.5
@@ -184,7 +185,6 @@ require (
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/minio/colorjson v1.0.4 // indirect
 	github.com/minio/filepath v1.0.0 // indirect
-	github.com/minio/mc v0.0.0-20230526175537-0fac0e006eae // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/websocket v1.6.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.1-0.20231216201459-8508981c8b6c // indirect

@@ -29,11 +29,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	humanize "github.com/dustin/go-humanize"
 	"github.com/minio/madmin-go"
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio/internal/auth"
+	"github.com/minio/minio/internal/config"
+	xldap "github.com/minio/minio/internal/config/identity/ldap"
+	"github.com/minio/minio/internal/kms"
 	"github.com/minio/minio/internal/logger"
 	iampolicy "github.com/minio/pkg/iam/policy"
 	etcd "go.etcd.io/etcd/client/v3"
@@ -207,8 +211,8 @@ type IAMSys struct {
 	sync.Mutex
 
 	iamRefreshInterval time.Duration
-
-	usersSysType UsersSysType
+	LDAPConfig         xldap.Config // only valid if usersSysType is LDAPUsers
+	usersSysType       UsersSysType
 
 	// map of policy names to policy definitions
 	iamPolicyDocsMap map[string]iampolicy.Policy
@@ -2818,4 +2822,30 @@ func NewIAMSys() *IAMSys {
 		iamUserGroupMemberships: make(map[string]set.StringSet),
 		configLoaded:            make(chan struct{}),
 	}
+}
+
+func decryptData(data []byte, objPath string) ([]byte, error) {
+	if utf8.Valid(data) {
+		return data, nil
+	}
+
+	pdata, err := madmin.DecryptData(globalActiveCred.String(), bytes.NewReader(data))
+	if err == nil {
+		return pdata, nil
+	}
+	if GlobalKMS != nil {
+		pdata, err = config.DecryptBytes(GlobalKMS, data, kms.Context{
+			minioMetaBucket: path.Join(minioMetaBucket, objPath),
+		})
+		if err == nil {
+			return pdata, nil
+		}
+		pdata, err = config.DecryptBytes(GlobalKMS, data, kms.Context{
+			minioMetaBucket: objPath,
+		})
+		if err == nil {
+			return pdata, nil
+		}
+	}
+	return nil, err
 }

@@ -134,7 +134,7 @@ func isServerResolvable(endpoint Endpoint, timeout time.Duration) error {
 		// https://golang.org/pkg/net/http/#Transport documentation
 		&http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           xhttp.NewCustomDialContext(3 * time.Second),
+			DialContext:           xhttp.NewCustomDialContext(3*time.Second, xhttp.TCPOptions{}),
 			ResponseHeaderTimeout: 3 * time.Second,
 			TLSHandshakeTimeout:   3 * time.Second,
 			ExpectContinueTimeout: 3 * time.Second,

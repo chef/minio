@@ -28,6 +28,7 @@ import (
 	"github.com/minio/console/restapi"
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio/internal/bucket/bandwidth"
+	"github.com/minio/minio/internal/config"
 	"github.com/minio/minio/internal/handlers"
 	"github.com/minio/minio/internal/kms"
 	"github.com/rs/dnscache"
@@ -170,6 +171,8 @@ var (
 	globalConfigSys *ConfigSys
 
 	globalNotificationSys  *NotificationSys
+	globalEventNotifier    *EventNotifier
+	globalNotifyTargetList *event.TargetList
 	globalConfigTargetList *event.TargetList
 	// globalEnvTargetList has list of targets configured via env.
 	globalEnvTargetList *event.TargetList
@@ -200,6 +203,7 @@ var (
 	globalTLSCerts *certs.Manager
 
 	globalHTTPServer        *xhttp.Server
+	globalTCPOptions        xhttp.TCPOptions
 	globalHTTPServerErrorCh = make(chan error)
 	globalOSSignalCh        = make(chan os.Signal, 1)
 
@@ -326,6 +330,12 @@ var (
 	globalConsoleSrv *restapi.Server
 
 	// Add new variable global values here.
+	globalConnReadDeadline  time.Duration
+	globalConnWriteDeadline time.Duration
+
+	globalSite = config.Site{
+		Region: globalMinioDefaultRegion,
+	}
 )
 
 var errSelfTestFailure = errors.New("self test failed. unsafe to start server")

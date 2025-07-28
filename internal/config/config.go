@@ -444,6 +444,12 @@ var (
 	}
 )
 
+// Site - holds site info - name and region.
+type Site struct {
+	Name   string
+	Region string
+}
+
 // LookupCreds - lookup credentials from config.
 func LookupCreds(kv KVS) (auth.Credentials, error) {
 	if err := CheckValidKeys(CredentialsSubSys, kv, DefaultCredentialKVS); err != nil {

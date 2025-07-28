@@ -748,7 +748,7 @@ func newSrvConfig(objAPI ObjectLayer) error {
 }
 
 func getValidConfig(objAPI ObjectLayer) (config.Config, error) {
-	return readServerConfig(GlobalContext, objAPI)
+	return readServerConfig(GlobalContext, objAPI, nil)
 }
 
 // loadConfig - loads a new config from disk, overrides params

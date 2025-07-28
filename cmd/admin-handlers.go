@@ -24,12 +24,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -62,6 +64,8 @@ const (
 	mgmtClientToken = "clientToken"
 	mgmtForceStart  = "forceStart"
 	mgmtForceStop   = "forceStop"
+
+	kubernetesVersionEndpoint = "https://kubernetes.default.svc/version"
 )
 
 func updateServer(u *url.URL, sha256Sum []byte, lrTime time.Time, releaseInfo string, mode string) (us madmin.ServerUpdateStatus, err error) {
@@ -1339,12 +1343,13 @@ func (a adminAPIHandlers) KMSKeyStatusHandler(w http.ResponseWriter, r *http.Req
 	writeSuccessResponseJSON(w, resp)
 }
 
-func getServerInfo(ctx context.Context, r *http.Request) madmin.InfoMessage {
+func getServerInfo(ctx context.Context, poolsInfoEnabled bool, r *http.Request) madmin.InfoMessage {
 	kmsStat := fetchKMSStatus()
 
 	ldap := madmin.LDAP{}
-	if globalLDAPConfig.Enabled {
-		ldapConn, err := globalLDAPConfig.Connect()
+	if globalIAMSys.LDAPConfig.Enabled {
+		ldapConn, err := globalIAMSys.LDAPConfig.Connect()
+		//nolint:gocritic
 		if err != nil {
 			ldap.Status = string(madmin.ItemOffline)
 		} else if ldapConn == nil {
@@ -1367,11 +1372,13 @@ func getServerInfo(ctx context.Context, r *http.Request) madmin.InfoMessage {
 
 	assignPoolNumbers(servers)
 
-	var backend interface{}
+	var backend madmin.ErasureBackend
+
 	mode := madmin.ItemInitializing
 
 	buckets := madmin.Buckets{}
 	objects := madmin.Objects{}
+	versions := madmin.Versions{}
 	usage := madmin.Usage{}
 
 	objectAPI := newObjectLayerFn()
@@ -1383,6 +1390,7 @@ func getServerInfo(ctx context.Context, r *http.Request) madmin.InfoMessage {
 		if err == nil {
 			buckets = madmin.Buckets{Count: dataUsageInfo.BucketsCount}
 			objects = madmin.Objects{Count: dataUsageInfo.ObjectsTotalCount}
+			versions = madmin.Versions{Count: dataUsageInfo.ObjectsTotalCount}
 			usage = madmin.Usage{Size: dataUsageInfo.ObjectsTotalSize}
 		} else {
 			buckets = madmin.Buckets{Error: err.Error()}
@@ -1392,25 +1400,19 @@ func getServerInfo(ctx context.Context, r *http.Request) madmin.InfoMessage {
 
 		// Fetching the backend information
 		backendInfo := objectAPI.BackendInfo()
-		if backendInfo.Type == madmin.Erasure {
-			// Calculate the number of online/offline disks of all nodes
-			var allDisks []madmin.Disk
-			for _, s := range servers {
-				allDisks = append(allDisks, s.Disks...)
-			}
-			onlineDisks, offlineDisks := getOnlineOfflineDisksStats(allDisks)
+		// Calculate the number of online/offline disks of all nodes
+		var allDisks []madmin.Disk
+		for _, s := range servers {
+			allDisks = append(allDisks, s.Disks...)
+		}
+		onlineDisks, offlineDisks := getOnlineOfflineDisksStats(allDisks)
 
-			backend = madmin.ErasureBackend{
-				Type:             madmin.ErasureType,
-				OnlineDisks:      onlineDisks.Sum(),
-				OfflineDisks:     offlineDisks.Sum(),
-				StandardSCParity: backendInfo.StandardSCParity,
-				RRSCParity:       backendInfo.RRSCParity,
-			}
-		} else {
-			backend = madmin.FSBackend{
-				Type: madmin.FsType,
-			}
+		backend = madmin.ErasureBackend{
+			Type:             madmin.ErasureType,
+			OnlineDisks:      onlineDisks.Sum(),
+			OfflineDisks:     offlineDisks.Sum(),
+			StandardSCParity: backendInfo.StandardSCParity,
+			RRSCParity:       backendInfo.RRSCParity,
 		}
 	}
 
@@ -1426,11 +1428,12 @@ func getServerInfo(ctx context.Context, r *http.Request) madmin.InfoMessage {
 	return madmin.InfoMessage{
 		Mode:         string(mode),
 		Domain:       domain,
-		Region:       globalServerRegion,
-		SQSARN:       globalNotificationSys.GetARNList(false),
+		Region:       globalSite.Region,
+		SQSARN:       globalEventNotifier.GetARNList(false),
 		DeploymentID: globalDeploymentID,
 		Buckets:      buckets,
 		Objects:      objects,
+		Versions:     versions,
 		Usage:        usage,
 		Services:     services,
 		Backend:      backend,
@@ -1438,434 +1441,450 @@ func getServerInfo(ctx context.Context, r *http.Request) madmin.InfoMessage {
 	}
 }
 
+func getKubernetesInfo(dctx context.Context) madmin.KubernetesInfo {
+	ctx, cancel := context.WithCancel(dctx)
+	defer cancel()
+
+	ki := madmin.KubernetesInfo{}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, kubernetesVersionEndpoint, nil)
+	if err != nil {
+		ki.Error = err.Error()
+		return ki
+	}
+
+	client := &http.Client{
+		Transport: NewHTTPTransport(),
+		Timeout:   10 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		ki.Error = err.Error()
+		return ki
+	}
+	defer resp.Body.Close()
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&ki); err != nil {
+		ki.Error = err.Error()
+	}
+	return ki
+}
+
+func fetchHealthInfo(healthCtx context.Context, objectAPI ObjectLayer, query *url.Values, healthInfoCh chan madmin.HealthInfo, healthInfo madmin.HealthInfo) {
+	hostAnonymizer := createHostAnonymizer()
+	// anonAddr - Anonymizes hosts in given input string.
+	anonAddr := func(addr string) string {
+		newAddr, found := hostAnonymizer[addr]
+		if found {
+			return newAddr
+		}
+
+		// If we reach here, it means that the given addr doesn't contain any of the hosts.
+		// Return it as is. Can happen for drive paths in non-distributed mode
+		return addr
+	}
+
+	// anonymizedAddr - Updated the addr of the node info with anonymized one
+	anonymizeAddr := func(info madmin.NodeInfo) {
+		info.SetAddr(anonAddr(info.GetAddr()))
+	}
+
+	partialWrite := func(oinfo madmin.HealthInfo) {
+		select {
+		case healthInfoCh <- oinfo:
+		case <-healthCtx.Done():
+		}
+	}
+
+	getAndWritePlatformInfo := func() {
+		if IsKubernetes() {
+			healthInfo.Sys.KubernetesInfo = getKubernetesInfo(healthCtx)
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteCPUs := func() {
+		if query.Get("syscpu") == "true" {
+			localCPUInfo := madmin.GetCPUs(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localCPUInfo)
+			healthInfo.Sys.CPUInfo = append(healthInfo.Sys.CPUInfo, localCPUInfo)
+
+			peerCPUInfo := globalNotificationSys.GetCPUs(healthCtx)
+			for _, cpuInfo := range peerCPUInfo {
+				anonymizeAddr(&cpuInfo)
+				healthInfo.Sys.CPUInfo = append(healthInfo.Sys.CPUInfo, cpuInfo)
+			}
+
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWritePartitions := func() {
+		if query.Get("sysdrivehw") == "true" {
+			localPartitions := madmin.GetPartitions(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localPartitions)
+			healthInfo.Sys.Partitions = append(healthInfo.Sys.Partitions, localPartitions)
+
+			peerPartitions := globalNotificationSys.GetPartitions(healthCtx)
+			for _, p := range peerPartitions {
+				anonymizeAddr(&p)
+				healthInfo.Sys.Partitions = append(healthInfo.Sys.Partitions, p)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteOSInfo := func() {
+		if query.Get("sysosinfo") == "true" {
+			localOSInfo := madmin.GetOSInfo(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localOSInfo)
+			healthInfo.Sys.OSInfo = append(healthInfo.Sys.OSInfo, localOSInfo)
+
+			peerOSInfos := globalNotificationSys.GetOSInfo(healthCtx)
+			for _, o := range peerOSInfos {
+				anonymizeAddr(&o)
+				healthInfo.Sys.OSInfo = append(healthInfo.Sys.OSInfo, o)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteMemInfo := func() {
+		if query.Get("sysmem") == "true" {
+			localMemInfo := madmin.GetMemInfo(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localMemInfo)
+			healthInfo.Sys.MemInfo = append(healthInfo.Sys.MemInfo, localMemInfo)
+
+			peerMemInfos := globalNotificationSys.GetMemInfo(healthCtx)
+			for _, m := range peerMemInfos {
+				anonymizeAddr(&m)
+				healthInfo.Sys.MemInfo = append(healthInfo.Sys.MemInfo, m)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteSysErrors := func() {
+		if query.Get(string(madmin.HealthDataTypeSysErrors)) == "true" {
+			localSysErrors := madmin.GetSysErrors(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localSysErrors)
+			healthInfo.Sys.SysErrs = append(healthInfo.Sys.SysErrs, localSysErrors)
+			partialWrite(healthInfo)
+
+			peerSysErrs := globalNotificationSys.GetSysErrors(healthCtx)
+			for _, se := range peerSysErrs {
+				anonymizeAddr(&se)
+				healthInfo.Sys.SysErrs = append(healthInfo.Sys.SysErrs, se)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteSysConfig := func() {
+		if query.Get(string(madmin.HealthDataTypeSysConfig)) == "true" {
+			localSysConfig := madmin.GetSysConfig(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localSysConfig)
+			healthInfo.Sys.SysConfig = append(healthInfo.Sys.SysConfig, localSysConfig)
+			partialWrite(healthInfo)
+
+			peerSysConfig := globalNotificationSys.GetSysConfig(healthCtx)
+			for _, sc := range peerSysConfig {
+				anonymizeAddr(&sc)
+				healthInfo.Sys.SysConfig = append(healthInfo.Sys.SysConfig, sc)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteSysServices := func() {
+		if query.Get(string(madmin.HealthDataTypeSysServices)) == "true" {
+			localSysServices := madmin.GetSysServices(healthCtx, globalLocalNodeName)
+			anonymizeAddr(&localSysServices)
+			healthInfo.Sys.SysServices = append(healthInfo.Sys.SysServices, localSysServices)
+			partialWrite(healthInfo)
+
+			peerSysServices := globalNotificationSys.GetSysServices(healthCtx)
+			for _, ss := range peerSysServices {
+				anonymizeAddr(&ss)
+				healthInfo.Sys.SysServices = append(healthInfo.Sys.SysServices, ss)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	anonymizeCmdLine := func(cmdLine string) string {
+		if !globalIsDistErasure {
+			// FS mode - single server - hard code to `server1`
+			anonCmdLine := strings.ReplaceAll(cmdLine, globalLocalNodeName, "server1")
+			if len(globalMinioConsoleHost) > 0 {
+				anonCmdLine = strings.ReplaceAll(anonCmdLine, globalMinioConsoleHost, "server1")
+			}
+			return anonCmdLine
+		}
+
+		// Server start command regex groups:
+		// 1 - minio server
+		// 2 - flags e.g. `--address :9000 --certs-dir /etc/minio/certs`
+		// 3 - pool args e.g. `https://node{01...16}.domain/data/disk{001...204} https://node{17...32}.domain/data/disk{001...204}`
+		re := regexp.MustCompile(`^(.*minio\s+server\s+)(--[^\s]+\s+[^\s]+\s+)*(.*)`)
+
+		// stays unchanged in the anonymized version
+		cmdLineWithoutPools := re.ReplaceAllString(cmdLine, `$1$2`)
+
+		// to be anonymized
+		poolsArgs := re.ReplaceAllString(cmdLine, `$3`)
+		var anonPools []string
+
+		if !(strings.Contains(poolsArgs, "{") && strings.Contains(poolsArgs, "}")) {
+			// No ellipses pattern. Anonymize host name from every pool arg
+			pools := strings.Fields(poolsArgs)
+			anonPools = make([]string, len(pools))
+			for index, arg := range pools {
+				anonPools[index] = anonAddr(arg)
+			}
+			return cmdLineWithoutPools + strings.Join(anonPools, " ")
+		}
+
+		// Ellipses pattern in pool args. Regex groups:
+		// 1 - server prefix
+		// 2 - number sequence for servers
+		// 3 - server suffix
+		// 4 - drive prefix (starting with /)
+		// 5 - number sequence for drives
+		// 6 - drive suffix
+		re = regexp.MustCompile(`([^\s^{]*)({\d+...\d+})?([^\s^{^/]*)(/[^\s^{]*)({\d+...\d+})?([^\s]*)`)
+		poolsMatches := re.FindAllStringSubmatch(poolsArgs, -1)
+
+		anonPools = make([]string, len(poolsMatches))
+		idxMap := map[int]string{
+			1: "spfx",
+			3: "ssfx",
+		}
+		for pi, poolsMatch := range poolsMatches {
+			// Replace the server prefix/suffix with anonymized ones
+			for idx, lbl := range idxMap {
+				if len(poolsMatch[idx]) > 0 {
+					poolsMatch[idx] = fmt.Sprintf("%s%d", lbl, crc32.ChecksumIEEE([]byte(poolsMatch[idx])))
+				}
+			}
+
+			// Remove the original pools args present at index 0
+			anonPools[pi] = strings.Join(poolsMatch[1:], "")
+		}
+		return cmdLineWithoutPools + strings.Join(anonPools, " ")
+	}
+
+	anonymizeProcInfo := func(p *madmin.ProcInfo) {
+		p.CmdLine = anonymizeCmdLine(p.CmdLine)
+		anonymizeAddr(p)
+	}
+
+	getAndWriteProcInfo := func() {
+		if query.Get("sysprocess") == "true" {
+			localProcInfo := madmin.GetProcInfo(healthCtx, globalLocalNodeName)
+			anonymizeProcInfo(&localProcInfo)
+			healthInfo.Sys.ProcInfo = append(healthInfo.Sys.ProcInfo, localProcInfo)
+			peerProcInfos := globalNotificationSys.GetProcInfo(healthCtx)
+			for _, p := range peerProcInfos {
+				anonymizeProcInfo(&p)
+				healthInfo.Sys.ProcInfo = append(healthInfo.Sys.ProcInfo, p)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	getAndWriteMinioConfig := func() {
+		if query.Get("minioconfig") == "true" {
+			config, err := readServerConfig(healthCtx, objectAPI, nil)
+			if err != nil {
+				healthInfo.Minio.Config = madmin.MinioConfig{
+					Error: err.Error(),
+				}
+			} else {
+				healthInfo.Minio.Config = madmin.MinioConfig{
+					Config: config.RedactSensitiveInfo(),
+				}
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
+	anonymizeNetwork := func(network map[string]string) map[string]string {
+		anonNetwork := map[string]string{}
+		for endpoint, status := range network {
+			anonEndpoint := anonAddr(endpoint)
+			anonNetwork[anonEndpoint] = status
+		}
+		return anonNetwork
+	}
+
+	anonymizeDrives := func(drives []madmin.Disk) []madmin.Disk {
+		anonDrives := []madmin.Disk{}
+		for _, drive := range drives {
+			drive.Endpoint = anonAddr(drive.Endpoint)
+			anonDrives = append(anonDrives, drive)
+		}
+		return anonDrives
+	}
+
+	go func() {
+		defer close(healthInfoCh)
+
+		partialWrite(healthInfo) // Write first message with only version and deployment id populated
+		getAndWritePlatformInfo()
+		getAndWriteCPUs()
+		getAndWritePartitions()
+		getAndWriteOSInfo()
+		getAndWriteMemInfo()
+		getAndWriteProcInfo()
+		getAndWriteMinioConfig()
+		getAndWriteSysErrors()
+		getAndWriteSysServices()
+		getAndWriteSysConfig()
+
+		if query.Get("minioinfo") == "true" {
+			infoMessage := getServerInfo(healthCtx, false, nil)
+			servers := make([]madmin.ServerInfo, 0, len(infoMessage.Servers))
+			for _, server := range infoMessage.Servers {
+				anonEndpoint := anonAddr(server.Endpoint)
+				servers = append(servers, madmin.ServerInfo{
+					State:      server.State,
+					Endpoint:   anonEndpoint,
+					Uptime:     server.Uptime,
+					Version:    server.Version,
+					CommitID:   server.CommitID,
+					Network:    anonymizeNetwork(server.Network),
+					Drives:     anonymizeDrives(server.Disks),
+					PoolNumber: server.PoolNumber,
+					MemStats: madmin.MemStats{
+						Alloc:      server.MemStats.Alloc,
+						TotalAlloc: server.MemStats.TotalAlloc,
+						Mallocs:    server.MemStats.Mallocs,
+						Frees:      server.MemStats.Frees,
+						HeapAlloc:  server.MemStats.HeapAlloc,
+					},
+					GoMaxProcs:     server.GoMaxProcs,
+					NumCPU:         server.NumCPU,
+					RuntimeVersion: server.RuntimeVersion,
+					GCStats:        server.GCStats,
+					MinioEnvVars:   server.MinioEnvVars,
+				})
+			}
+
+			tls := getTLSInfo()
+			isK8s := IsKubernetes()
+			isDocker := IsDocker()
+			healthInfo.Minio.Info = madmin.MinioInfo{
+				Mode:         infoMessage.Mode,
+				Domain:       infoMessage.Domain,
+				Region:       infoMessage.Region,
+				SQSARN:       infoMessage.SQSARN,
+				DeploymentID: infoMessage.DeploymentID,
+				Buckets:      infoMessage.Buckets,
+				Objects:      infoMessage.Objects,
+				Usage:        infoMessage.Usage,
+				Services:     infoMessage.Services,
+				Backend:      infoMessage.Backend,
+				Servers:      servers,
+				TLS:          tls,
+				IsKubernetes: &isK8s,
+				IsDocker:     &isDocker,
+			}
+			partialWrite(healthInfo)
+		}
+	}()
+}
+
 // HealthInfoHandler - GET /minio/admin/v3/healthinfo
 // ----------
 // Get server health info
-// func (a adminAPIHandlers) HealthInfoHandler(w http.ResponseWriter, r *http.Request) {
-// 	ctx := newContext(r, w, "HealthInfo")
+func (a adminAPIHandlers) HealthInfoHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := newContext(r, w, "HealthInfo")
+	defer logger.AuditLog(ctx, w, r, mustGetClaimsFromToken(r))
 
-// 	defer logger.AuditLog(ctx, w, r, mustGetClaimsFromToken(r))
+	objectAPI, _ := validateAdminReq(ctx, w, r, iampolicy.HealthInfoAdminAction)
+	if objectAPI == nil {
+		return
+	}
 
-// 	objectAPI, _ := validateAdminReq(ctx, w, r, iampolicy.HealthInfoAdminAction)
-// 	if objectAPI == nil {
-// 		return
-// 	}
+	query := r.Form
+	healthInfoCh := make(chan madmin.HealthInfo)
+	enc := json.NewEncoder(w)
 
-// 	query := r.Form
-// 	healthInfo := madmin.HealthInfo{Version: madmin.HealthInfoVersion}
-// 	healthInfoCh := make(chan madmin.HealthInfo)
+	healthInfo := madmin.HealthInfo{
+		TimeStamp: time.Now().UTC(),
+		Version:   madmin.HealthInfoVersion,
+		Minio: madmin.MinioHealthInfo{
+			Info: madmin.MinioInfo{
+				DeploymentID: globalDeploymentID,
+			},
+		},
+	}
 
-// 	enc := json.NewEncoder(w)
-// 	partialWrite := func(oinfo madmin.HealthInfo) {
-// 		healthInfoCh <- oinfo
-// 	}
+	errResp := func(err error) {
+		errorResponse := getAPIErrorResponse(ctx, toAdminAPIErr(ctx, err), r.URL.String(),
+			w.Header().Get(xhttp.AmzRequestID), w.Header().Get(xhttp.AmzRequestHostID))
+		encodedErrorResponse := encodeResponse(errorResponse)
+		healthInfo.Error = string(encodedErrorResponse)
+		logger.LogIf(ctx, enc.Encode(healthInfo))
+	}
 
-// 	setCommonHeaders(w)
+	deadline := 10 * time.Second // Default deadline is 10secs for health diagnostics.
+	if dstr := query.Get("deadline"); dstr != "" {
+		var err error
+		deadline, err = time.ParseDuration(dstr)
+		if err != nil {
+			errResp(err)
+			return
+		}
+	}
 
-// 	setEventStreamHeaders(w)
+	nsLock := objectAPI.NewNSLock(minioMetaBucket, "health-check-in-progress")
+	lkctx, err := nsLock.GetLock(ctx, newDynamicTimeout(deadline, deadline))
+	if err != nil { // returns a locked lock
+		errResp(err)
+		return
+	}
 
-// 	w.WriteHeader(http.StatusOK)
+	defer nsLock.Unlock(lkctx.Cancel)
+	healthCtx, healthCancel := context.WithTimeout(lkctx.Context(), deadline)
+	defer healthCancel()
 
-// 	errResp := func(err error) {
-// 		errorResponse := getAPIErrorResponse(ctx, toAdminAPIErr(ctx, err), r.URL.String(),
-// 			w.Header().Get(xhttp.AmzRequestID), globalDeploymentID)
-// 		encodedErrorResponse := encodeResponse(errorResponse)
-// 		healthInfo.Error = string(encodedErrorResponse)
-// 		logger.LogIf(ctx, enc.Encode(healthInfo))
-// 	}
+	go fetchHealthInfo(healthCtx, objectAPI, &query, healthInfoCh, healthInfo)
 
-// 	deadline := 1 * time.Hour
-// 	if dstr := r.Form.Get("deadline"); dstr != "" {
-// 		var err error
-// 		deadline, err = time.ParseDuration(dstr)
-// 		if err != nil {
-// 			errResp(err)
-// 			return
-// 		}
-// 	}
+	setCommonHeaders(w)
+	setEventStreamHeaders(w)
+	w.WriteHeader(http.StatusOK)
 
-// 	deadlinedCtx, deadlineCancel := context.WithTimeout(ctx, deadline)
-// 	defer deadlineCancel()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-// 	nsLock := objectAPI.NewNSLock(minioMetaBucket, "health-check-in-progress")
-// 	lkctx, err := nsLock.GetLock(ctx, newDynamicTimeout(deadline, deadline))
-// 	if err != nil { // returns a locked lock
-// 		errResp(err)
-// 		return
-// 	}
-// 	defer nsLock.Unlock(lkctx.Cancel)
+	for {
+		select {
+		case oinfo, ok := <-healthInfoCh:
+			if !ok {
+				return
+			}
+			if err := enc.Encode(oinfo); err != nil {
+				return
+			}
+			if len(healthInfoCh) == 0 {
+				// Flush if nothing is queued
+				w.(http.Flusher).Flush()
+			}
+		case <-ticker.C:
+			if _, err := w.Write([]byte(" ")); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		case <-healthCtx.Done():
+			return
+		}
+	}
+}
 
-// 	hostAnonymizer := createHostAnonymizer()
-// 	// anonAddr - Anonymizes hosts in given input string.
-// 	anonAddr := func(addr string) string {
-// 		newAddr, found := hostAnonymizer[addr]
-// 		if found {
-// 			return newAddr
-// 		}
-
-// 		// If we reach here, it means that the given addr doesn't contain any of the hosts.
-// 		// Return it as is. Can happen for drive paths in non-distributed mode
-// 		return addr
-// 	}
-
-// 	// anonymizedAddr - Updated the addr of the node info with anonymized one
-// 	anonymizeAddr := func(info madmin.NodeInfo) {
-// 		info.SetAddr(anonAddr(info.GetAddr()))
-// 	}
-
-// 	getAndWriteCPUs := func() {
-// 		if query.Get("syscpu") == "true" {
-// 			localCPUInfo := madmin.GetCPUs(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localCPUInfo)
-// 			healthInfo.Sys.CPUInfo = append(healthInfo.Sys.CPUInfo, localCPUInfo)
-
-// 			peerCPUInfo := globalNotificationSys.GetCPUs(deadlinedCtx)
-// 			for _, cpuInfo := range peerCPUInfo {
-// 				anonymizeAddr(&cpuInfo)
-// 				healthInfo.Sys.CPUInfo = append(healthInfo.Sys.CPUInfo, cpuInfo)
-// 			}
-
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWritePartitions := func() {
-// 		if query.Get("sysdrivehw") == "true" {
-// 			localPartitions := madmin.GetPartitions(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localPartitions)
-// 			healthInfo.Sys.Partitions = append(healthInfo.Sys.Partitions, localPartitions)
-
-// 			peerPartitions := globalNotificationSys.GetPartitions(deadlinedCtx)
-// 			for _, p := range peerPartitions {
-// 				anonymizeAddr(&p)
-// 				healthInfo.Sys.Partitions = append(healthInfo.Sys.Partitions, p)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteOSInfo := func() {
-// 		if query.Get("sysosinfo") == "true" {
-// 			localOSInfo := madmin.GetOSInfo(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localOSInfo)
-// 			healthInfo.Sys.OSInfo = append(healthInfo.Sys.OSInfo, localOSInfo)
-
-// 			peerOSInfos := globalNotificationSys.GetOSInfo(deadlinedCtx)
-// 			for _, o := range peerOSInfos {
-// 				anonymizeAddr(&o)
-// 				healthInfo.Sys.OSInfo = append(healthInfo.Sys.OSInfo, o)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteMemInfo := func() {
-// 		if query.Get("sysmem") == "true" {
-// 			localMemInfo := madmin.GetMemInfo(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localMemInfo)
-// 			healthInfo.Sys.MemInfo = append(healthInfo.Sys.MemInfo, localMemInfo)
-
-// 			peerMemInfos := globalNotificationSys.GetMemInfo(deadlinedCtx)
-// 			for _, m := range peerMemInfos {
-// 				anonymizeAddr(&m)
-// 				healthInfo.Sys.MemInfo = append(healthInfo.Sys.MemInfo, m)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteSysErrors := func() {
-// 		if query.Get(string(madmin.HealthDataTypeSysErrors)) == "true" {
-// 			localSysErrors := madmin.GetSysErrors(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localSysErrors)
-// 			healthInfo.Sys.SysErrs = append(healthInfo.Sys.SysErrs, localSysErrors)
-// 			partialWrite(healthInfo)
-
-// 			peerSysErrs := globalNotificationSys.GetSysErrors(deadlinedCtx)
-// 			for _, se := range peerSysErrs {
-// 				anonymizeAddr(&se)
-// 				healthInfo.Sys.SysErrs = append(healthInfo.Sys.SysErrs, se)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteSysConfig := func() {
-// 		if query.Get(string(madmin.HealthDataTypeSysConfig)) == "true" {
-// 			localSysConfig := madmin.GetSysConfig(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localSysConfig)
-// 			healthInfo.Sys.SysConfig = append(healthInfo.Sys.SysConfig, localSysConfig)
-// 			partialWrite(healthInfo)
-
-// 			peerSysConfig := globalNotificationSys.GetSysConfig(deadlinedCtx)
-// 			for _, sc := range peerSysConfig {
-// 				anonymizeAddr(&sc)
-// 				healthInfo.Sys.SysConfig = append(healthInfo.Sys.SysConfig, sc)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteSysServices := func() {
-// 		if query.Get(string(madmin.HealthDataTypeSysServices)) == "true" {
-// 			localSysServices := madmin.GetSysServices(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localSysServices)
-// 			healthInfo.Sys.SysServices = append(healthInfo.Sys.SysServices, localSysServices)
-// 			partialWrite(healthInfo)
-
-// 			peerSysServices := globalNotificationSys.GetSysServices(deadlinedCtx)
-// 			for _, ss := range peerSysServices {
-// 				anonymizeAddr(&ss)
-// 				healthInfo.Sys.SysServices = append(healthInfo.Sys.SysServices, ss)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	anonymizeCmdLine := func(cmdLine string) string {
-// 		if !globalIsDistErasure {
-// 			// FS mode - single server - hard code to `server1`
-// 			anonCmdLine := strings.Replace(cmdLine, globalLocalNodeName, "server1", -1)
-// 			return strings.Replace(anonCmdLine, globalMinioConsoleHost, "server1", -1)
-// 		}
-
-// 		// Server start command regex groups:
-// 		// 1 - minio server
-// 		// 2 - flags e.g. `--address :9000 --certs-dir /etc/minio/certs`
-// 		// 3 - pool args e.g. `https://node{01...16}.domain/data/disk{001...204} https://node{17...32}.domain/data/disk{001...204}`
-// 		re := regexp.MustCompile(`^(.*minio\s+server\s+)(--[^\s]+\s+[^\s]+\s+)*(.*)`)
-
-// 		// stays unchanged in the anonymized version
-// 		cmdLineWithoutPools := re.ReplaceAllString(cmdLine, `$1$2`)
-
-// 		// to be anonymized
-// 		poolsArgs := re.ReplaceAllString(cmdLine, `$3`)
-// 		var anonPools []string
-
-// 		if !(strings.Contains(poolsArgs, "{") && strings.Contains(poolsArgs, "}")) {
-// 			// No ellipses pattern. Anonymize host name from every pool arg
-// 			pools := strings.Fields(poolsArgs)
-// 			anonPools = make([]string, len(pools))
-// 			for _, arg := range pools {
-// 				anonPools = append(anonPools, anonAddr(arg))
-// 			}
-// 			return cmdLineWithoutPools + strings.Join(anonPools, " ")
-// 		}
-
-// 		// Ellipses pattern in pool args. Regex groups:
-// 		// 1 - server prefix
-// 		// 2 - number sequence for servers
-// 		// 3 - server suffix
-// 		// 4 - drive prefix (starting with /)
-// 		// 5 - number sequence for drives
-// 		// 6 - drive suffix
-// 		re = regexp.MustCompile(`([^\s^{]*)({\d+...\d+})?([^\s^{^/]*)(/[^\s^{]*)({\d+...\d+})?([^\s]*)`)
-// 		poolsMatches := re.FindAllStringSubmatch(poolsArgs, -1)
-
-// 		anonPools = make([]string, len(poolsMatches))
-// 		idxMap := map[int]string{
-// 			1: "spfx",
-// 			3: "ssfx",
-// 		}
-// 		for pi, poolsMatch := range poolsMatches {
-// 			// Replace the server prefix/suffix with anonymized ones
-// 			for idx, lbl := range idxMap {
-// 				if len(poolsMatch[idx]) > 0 {
-// 					poolsMatch[idx] = fmt.Sprintf("%s%d", lbl, crc32.ChecksumIEEE([]byte(poolsMatch[idx])))
-// 				}
-// 			}
-
-// 			// Remove the original pools args present at index 0
-// 			anonPools[pi] = strings.Join(poolsMatch[1:], "")
-// 		}
-// 		return cmdLineWithoutPools + strings.Join(anonPools, " ")
-// 	}
-
-// 	anonymizeProcInfo := func(p *madmin.ProcInfo) {
-// 		p.CmdLine = anonymizeCmdLine(p.CmdLine)
-// 		anonymizeAddr(p)
-// 	}
-
-// 	getAndWriteProcInfo := func() {
-// 		if query.Get("sysprocess") == "true" {
-// 			localProcInfo := madmin.GetProcInfo(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeProcInfo(&localProcInfo)
-// 			healthInfo.Sys.ProcInfo = append(healthInfo.Sys.ProcInfo, localProcInfo)
-// 			peerProcInfos := globalNotificationSys.GetProcInfo(deadlinedCtx)
-// 			for _, p := range peerProcInfos {
-// 				anonymizeProcInfo(&p)
-// 				healthInfo.Sys.ProcInfo = append(healthInfo.Sys.ProcInfo, p)
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteMinioConfig := func() {
-// 		if query.Get("minioconfig") == "true" {
-// 			config, err := readServerConfig(ctx, objectAPI)
-// 			if err != nil {
-// 				healthInfo.Minio.Config = madmin.MinioConfig{
-// 					Error: err.Error(),
-// 				}
-// 			} else {
-// 				healthInfo.Minio.Config = madmin.MinioConfig{
-// 					Config: config.RedactSensitiveInfo(),
-// 				}
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	getAndWriteDrivePerfInfo := func() {
-// 		if query.Get("perfdrive") == "true" {
-// 			localDPI := getDrivePerfInfos(deadlinedCtx, globalLocalNodeName)
-// 			anonymizeAddr(&localDPI)
-// 			healthInfo.Perf.Drives = append(healthInfo.Perf.Drives, localDPI)
-// 			partialWrite(healthInfo)
-
-// 			perfCh := globalNotificationSys.GetDrivePerfInfos(deadlinedCtx)
-// 			for perfInfo := range perfCh {
-// 				anonymizeAddr(&perfInfo)
-// 				healthInfo.Perf.Drives = append(healthInfo.Perf.Drives, perfInfo)
-// 				partialWrite(healthInfo)
-// 			}
-// 		}
-// 	}
-
-// 	anonymizeNetPerfInfo := func(npi *madmin.NetPerfInfo) {
-// 		anonymizeAddr(npi)
-// 		rps := npi.RemotePeers
-// 		for idx, peer := range rps {
-// 			anonymizeAddr(&peer)
-// 			rps[idx] = peer
-// 		}
-// 		npi.RemotePeers = rps
-// 	}
-
-// 	getAndWriteNetPerfInfo := func() {
-// 		if globalIsDistErasure && query.Get("perfnet") == "true" {
-// 			localNPI := globalNotificationSys.GetNetPerfInfo(deadlinedCtx)
-// 			anonymizeNetPerfInfo(&localNPI)
-// 			healthInfo.Perf.Net = append(healthInfo.Perf.Net, localNPI)
-
-// 			partialWrite(healthInfo)
-
-// 			netInfos := globalNotificationSys.DispatchNetPerfChan(deadlinedCtx)
-// 			for netInfo := range netInfos {
-// 				anonymizeNetPerfInfo(&netInfo)
-// 				healthInfo.Perf.Net = append(healthInfo.Perf.Net, netInfo)
-// 				partialWrite(healthInfo)
-// 			}
-
-// 			ppi := globalNotificationSys.GetParallelNetPerfInfo(deadlinedCtx)
-// 			anonymizeNetPerfInfo(&ppi)
-// 			healthInfo.Perf.NetParallel = ppi
-// 			partialWrite(healthInfo)
-// 		}
-// 	}
-
-// 	anonymizeNetwork := func(network map[string]string) map[string]string {
-// 		anonNetwork := map[string]string{}
-// 		for endpoint, status := range network {
-// 			anonEndpoint := anonAddr(endpoint)
-// 			anonNetwork[anonEndpoint] = status
-// 		}
-// 		return anonNetwork
-
-// 	}
-
-// 	anonymizeDrives := func(drives []madmin.Disk) []madmin.Disk {
-// 		anonDrives := []madmin.Disk{}
-// 		for _, drive := range drives {
-// 			drive.Endpoint = anonAddr(drive.Endpoint)
-// 			anonDrives = append(anonDrives, drive)
-// 		}
-// 		return anonDrives
-// 	}
-
-// 	go func() {
-// 		defer close(healthInfoCh)
-
-// 		partialWrite(healthInfo) // Write first message with only version populated
-// 		getAndWriteCPUs()
-// 		getAndWritePartitions()
-// 		getAndWriteOSInfo()
-// 		getAndWriteMemInfo()
-// 		getAndWriteProcInfo()
-// 		getAndWriteMinioConfig()
-// 		getAndWriteDrivePerfInfo()
-// 		getAndWriteNetPerfInfo()
-// 		getAndWriteSysErrors()
-// 		getAndWriteSysServices()
-// 		getAndWriteSysConfig()
-
-// 		if query.Get("minioinfo") == "true" {
-// 			infoMessage := getServerInfo(ctx, r)
-// 			servers := []madmin.ServerInfo{}
-// 			for _, server := range infoMessage.Servers {
-// 				anonEndpoint := anonAddr(server.Endpoint)
-// 				servers = append(servers, madmin.ServerInfo{
-// 					State:      server.State,
-// 					Endpoint:   anonEndpoint,
-// 					Uptime:     server.Uptime,
-// 					Version:    server.Version,
-// 					CommitID:   server.CommitID,
-// 					Network:    anonymizeNetwork(server.Network),
-// 					Drives:     anonymizeDrives(server.Disks),
-// 					PoolNumber: server.PoolNumber,
-// 					MemStats: madmin.MemStats{
-// 						Alloc:      server.MemStats.Alloc,
-// 						TotalAlloc: server.MemStats.TotalAlloc,
-// 						Mallocs:    server.MemStats.Mallocs,
-// 						Frees:      server.MemStats.Frees,
-// 						HeapAlloc:  server.MemStats.HeapAlloc,
-// 					},
-// 				})
-// 			}
-
-// 			healthInfo.Minio.Info = madmin.MinioInfo{
-// 				Mode:         infoMessage.Mode,
-// 				Domain:       infoMessage.Domain,
-// 				Region:       infoMessage.Region,
-// 				SQSARN:       infoMessage.SQSARN,
-// 				DeploymentID: infoMessage.DeploymentID,
-// 				Buckets:      infoMessage.Buckets,
-// 				Objects:      infoMessage.Objects,
-// 				Usage:        infoMessage.Usage,
-// 				Services:     infoMessage.Services,
-// 				Backend:      infoMessage.Backend,
-// 				Servers:      servers,
-// 				TLS:          getTLSInfo(),
-// 			}
-// 			partialWrite(healthInfo)
-// 		}
-// 	}()
-
-// 	ticker := time.NewTicker(5 * time.Second)
-// 	defer ticker.Stop()
-
-// 	for {
-// 		select {
-// 		case oinfo, ok := <-healthInfoCh:
-// 			if !ok {
-// 				return
-// 			}
-// 			logger.LogIf(ctx, enc.Encode(oinfo))
-// 			w.(http.Flusher).Flush()
-// 		case <-ticker.C:
-// 			if _, err := w.Write([]byte(" ")); err != nil {
-// 				return
-// 			}
-// 			w.(http.Flusher).Flush()
-// 		case <-deadlinedCtx.Done():
-// 			w.(http.Flusher).Flush()
-// 			return
-// 		}
-// 	}
-
-// }
-
-func getTLSInfo() madmin.TLSInfo {
+func getTLSInfo() *madmin.TLSInfo {
 	tlsInfo := madmin.TLSInfo{
 		TLSEnabled: globalIsTLS,
 		Certs:      []madmin.TLSCert{},
@@ -1881,7 +1900,7 @@ func getTLSInfo() madmin.TLSInfo {
 			})
 		}
 	}
-	return tlsInfo
+	return &tlsInfo
 }
 
 // BandwidthMonitorHandler - GET /minio/admin/v3/bandwidth
@@ -1956,7 +1975,7 @@ func (a adminAPIHandlers) ServerInfoHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Marshal API response
-	jsonBytes, err := json.Marshal(getServerInfo(ctx, r))
+	jsonBytes, err := json.Marshal(getServerInfo(ctx, false, r))
 	if err != nil {
 		writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, err), r.URL)
 		return
@@ -2113,7 +2132,7 @@ func checkConnection(endpointStr string, timeout time.Duration) error {
 
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           xhttp.NewCustomDialContext(timeout),
+		DialContext:           xhttp.NewCustomDialContext(timeout, xhttp.TCPOptions{}),
 		ResponseHeaderTimeout: 5 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 5 * time.Second,

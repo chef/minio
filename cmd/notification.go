@@ -42,7 +42,6 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/sync/errgroup"
-	"github.com/minio/pkg/bucket/policy"
 	xnet "github.com/minio/pkg/net"
 )
 
@@ -1307,76 +1306,6 @@ type eventArgs struct {
 	RespElements map[string]string
 	Host         string
 	UserAgent    string
-}
-
-// ToEvent - converts to notification event.
-func (args eventArgs) ToEvent(escape bool) event.Event {
-	eventTime := UTCNow()
-	uniqueID := fmt.Sprintf("%X", eventTime.UnixNano())
-
-	respElements := map[string]string{
-		"x-amz-request-id": args.RespElements["requestId"],
-		"x-minio-origin-endpoint": func() string {
-			if globalMinioEndpoint != "" {
-				return globalMinioEndpoint
-			}
-			return getAPIEndpoints()[0]
-		}(), // MinIO specific custom elements.
-	}
-	// Add deployment as part of
-	if globalDeploymentID != "" {
-		respElements["x-minio-deployment-id"] = globalDeploymentID
-	}
-	if args.RespElements["content-length"] != "" {
-		respElements["content-length"] = args.RespElements["content-length"]
-	}
-	keyName := args.Object.Name
-	if escape {
-		keyName = url.QueryEscape(args.Object.Name)
-	}
-	newEvent := event.Event{
-		EventVersion:      "2.0",
-		EventSource:       "minio:s3",
-		AwsRegion:         args.ReqParams["region"],
-		EventTime:         eventTime.Format(event.AMZTimeFormat),
-		EventName:         args.EventName,
-		UserIdentity:      event.Identity{PrincipalID: args.ReqParams["principalId"]},
-		RequestParameters: args.ReqParams,
-		ResponseElements:  respElements,
-		S3: event.Metadata{
-			SchemaVersion:   "1.0",
-			ConfigurationID: "Config",
-			Bucket: event.Bucket{
-				Name:          args.BucketName,
-				OwnerIdentity: event.Identity{PrincipalID: args.ReqParams["principalId"]},
-				ARN:           policy.ResourceARNPrefix + args.BucketName,
-			},
-			Object: event.Object{
-				Key:       keyName,
-				VersionID: args.Object.VersionID,
-				Sequencer: uniqueID,
-			},
-		},
-		Source: event.Source{
-			Host:      args.Host,
-			UserAgent: args.UserAgent,
-		},
-	}
-
-	if args.EventName != event.ObjectRemovedDelete && args.EventName != event.ObjectRemovedDeleteMarkerCreated {
-		newEvent.S3.Object.ETag = args.Object.ETag
-		newEvent.S3.Object.Size = args.Object.Size
-		newEvent.S3.Object.ContentType = args.Object.ContentType
-		newEvent.S3.Object.UserMetadata = make(map[string]string, len(args.Object.UserDefined))
-		for k, v := range args.Object.UserDefined {
-			if strings.HasPrefix(strings.ToLower(k), ReservedMetadataPrefixLower) {
-				continue
-			}
-			newEvent.S3.Object.UserMetadata[k] = v
-		}
-	}
-
-	return newEvent
 }
 
 func sendEvent(args eventArgs) {

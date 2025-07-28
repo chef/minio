@@ -45,6 +45,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
 	"github.com/minio/madmin-go"
+	"github.com/minio/mc/pkg/deadlineconn"
 	miniogopolicy "github.com/minio/minio-go/v7/pkg/policy"
 	"github.com/minio/minio/internal/handlers"
 	xhttp "github.com/minio/minio/internal/http"
@@ -160,7 +161,7 @@ func hasContentMD5(h http.Header) bool {
 	return ok
 }
 
-/// http://docs.aws.amazon.com/AmazonS3/latest/dev/UploadingObjects.html
+// / http://docs.aws.amazon.com/AmazonS3/latest/dev/UploadingObjects.html
 const (
 	// Maximum object size per PUT request is 5TB.
 	// This is a divergence from S3 limit on purpose to support
@@ -465,7 +466,7 @@ func newInternodeHTTPTransport(tlsConfig *tls.Config, dialTimeout time.Duration)
 	// https://golang.org/pkg/net/http/#Transport documentation
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           xhttp.DialContextWithDNSCache(globalDNSCache, xhttp.NewInternodeDialContext(dialTimeout)),
+		DialContext:           xhttp.DialContextWithDNSCache(globalDNSCache, xhttp.NewInternodeDialContext(dialTimeout, xhttp.TCPOptions{})),
 		MaxIdleConnsPerHost:   1024,
 		WriteBufferSize:       32 << 10, // 32KiB moving up from 4KiB default
 		ReadBufferSize:        32 << 10, // 32KiB moving up from 4KiB default
@@ -512,7 +513,7 @@ func newCustomHTTPProxyTransport(tlsConfig *tls.Config, dialTimeout time.Duratio
 	// https://golang.org/pkg/net/http/#Transport documentation
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           xhttp.DialContextWithDNSCache(globalDNSCache, xhttp.NewInternodeDialContext(dialTimeout)),
+		DialContext:           xhttp.DialContextWithDNSCache(globalDNSCache, xhttp.NewInternodeDialContext(dialTimeout, xhttp.TCPOptions{})),
 		MaxIdleConnsPerHost:   1024,
 		MaxConnsPerHost:       1024,
 		WriteBufferSize:       16 << 10, // 16KiB moving up from 4KiB default
@@ -538,7 +539,7 @@ func newCustomHTTPTransport(tlsConfig *tls.Config, dialTimeout time.Duration) fu
 	// https://golang.org/pkg/net/http/#Transport documentation
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           xhttp.DialContextWithDNSCache(globalDNSCache, xhttp.NewInternodeDialContext(dialTimeout)),
+		DialContext:           xhttp.DialContextWithDNSCache(globalDNSCache, xhttp.NewInternodeDialContext(dialTimeout, xhttp.TCPOptions{})),
 		MaxIdleConnsPerHost:   1024,
 		WriteBufferSize:       16 << 10, // 16KiB moving up from 4KiB default
 		ReadBufferSize:        16 << 10, // 16KiB moving up from 4KiB default
@@ -1080,4 +1081,45 @@ func speedTest(ctx context.Context, throughputSize, concurrencyStart int, durati
 		}
 	}()
 	return ch
+}
+
+// NewHTTPTransport returns a new http configuration
+// used while communicating with the cloud backends.
+func NewHTTPTransport() *http.Transport {
+	return NewHTTPTransportWithTimeout(1 * time.Minute)
+}
+
+// NewHTTPTransportWithTimeout allows setting a timeout.
+func NewHTTPTransportWithTimeout(timeout time.Duration) *http.Transport {
+	return xhttp.ConnSettings{
+		DialContext: newCustomDialContext(),
+		DNSCache:    globalDNSCache,
+		DialTimeout: defaultDialTimeout,
+		RootCAs:     globalRootCAs,
+		TCPOptions:  globalTCPOptions,
+		EnableHTTP2: false,
+	}.NewHTTPTransportWithTimeout(timeout)
+}
+
+type dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// newCustomDialContext setups a custom dialer for any external communication and proxies.
+func newCustomDialContext() dialContext {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialer := &net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		dconn := deadlineconn.New(conn).
+			WithReadDeadline(globalConnReadDeadline).
+			WithWriteDeadline(globalConnWriteDeadline)
+
+		return dconn, nil
+	}
 }
