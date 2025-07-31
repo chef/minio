@@ -1853,14 +1853,14 @@ func ExecObjectLayerTestWithDirs(t TestErrHandler, objTest objTestTypeWithDirs) 
 	if localMetacacheMgr != nil {
 		localMetacacheMgr.deleteAll()
 	}
-
-	// initAllSubsystems(ctx)
 	objLayer, fsDirs, err := prepareErasure16(ctx)
 	if err != nil {
 		t.Fatalf("Initialization of object layer failed for Erasure setup: %s", err)
 	}
+	initAllSubsystems(ctx, objLayer)
+
 	setObjectLayer(objLayer)
-	// initConfigSubsystem(ctx, objLayer)
+	initConfigSubsystem(ctx, objLayer)
 	globalIAMSys.Init(ctx, objLayer, globalEtcdClient, 2*time.Second)
 
 	// Executing the object layer tests for Erasure.

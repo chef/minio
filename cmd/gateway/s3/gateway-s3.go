@@ -630,7 +630,9 @@ func (l *s3Objects) NewMultipartUpload(ctx context.Context, bucket string, objec
 func (l *s3Objects) PutObjectPart(ctx context.Context, bucket string, object string, uploadID string, partID int, r *minio.PutObjReader, opts minio.ObjectOptions) (pi minio.PartInfo, e error) {
 	data := r.Reader
 	putOpts := miniogo.PutObjectPartOptions{
-		SSE: opts.ServerSideEncryption,
+		SSE:       opts.ServerSideEncryption,
+		Md5Base64: data.MD5Base64String(),
+		Sha256Hex: data.SHA256HexString(),
 	}
 	info, err := l.Client.PutObjectPart(ctx, bucket, object, uploadID, partID, data, data.Size(), putOpts)
 	if err != nil {

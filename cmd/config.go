@@ -24,6 +24,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/madmin-go"
@@ -151,29 +152,30 @@ func saveServerConfig(ctx context.Context, objAPI ObjectLayer, cfg interface{}) 
 }
 
 // data is optional. If nil it will be loaded from backend.
-func readServerConfig(ctx context.Context, objAPI ObjectLayer, data []byte) (config.Config, error) {
-	srvCfg := config.New()
-	var err error
-	if len(data) == 0 {
-		configFile := path.Join(minioConfigPrefix, minioConfigFile)
-		data, err = readConfig(ctx, objAPI, configFile)
-		if err != nil {
-			if errors.Is(err, errConfigNotFound) {
-				lookupConfigs(srvCfg, objAPI)
-				return srvCfg, nil
-			}
-			return nil, err
+func readServerConfig(ctx context.Context, objAPI ObjectLayer) (config.Config, error) {
+	var srvCfg = config.New()
+	configFile := path.Join(minioConfigPrefix, minioConfigFile)
+	data, err := readConfig(ctx, objAPI, configFile)
+	if err != nil {
+		if errors.Is(err, errConfigNotFound) {
+			lookupConfigs(srvCfg, objAPI)
+			return srvCfg, nil
 		}
+		return nil, err
+	}
 
-		data, err = decryptData(data, configFile)
+	if GlobalKMS != nil && !utf8.Valid(data) {
+		data, err = config.DecryptBytes(GlobalKMS, data, kms.Context{
+			minioMetaBucket: path.Join(minioMetaBucket, configFile),
+		})
 		if err != nil {
 			lookupConfigs(srvCfg, objAPI)
 			return nil, err
 		}
 	}
 
-	json := jsoniter.ConfigCompatibleWithStandardLibrary
-	if err := json.Unmarshal(data, &srvCfg); err != nil {
+	var json = jsoniter.ConfigCompatibleWithStandardLibrary
+	if err = json.Unmarshal(data, &srvCfg); err != nil {
 		return nil, err
 	}
 
