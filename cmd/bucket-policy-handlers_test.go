@@ -38,6 +38,7 @@ func getAnonReadOnlyBucketPolicy(bucketName string) *policy.Policy {
 	return &policy.Policy{
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{policy.NewStatement(
+			"",
 			policy.Allow,
 			policy.NewPrincipal("*"),
 			policy.NewActionSet(policy.GetBucketLocationAction, policy.ListBucketAction),
@@ -51,6 +52,7 @@ func getAnonWriteOnlyBucketPolicy(bucketName string) *policy.Policy {
 	return &policy.Policy{
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{policy.NewStatement(
+			"",
 			policy.Allow,
 			policy.NewPrincipal("*"),
 			policy.NewActionSet(
@@ -67,6 +69,7 @@ func getAnonReadOnlyObjectPolicy(bucketName, prefix string) *policy.Policy {
 	return &policy.Policy{
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{policy.NewStatement(
+			"",
 			policy.Allow,
 			policy.NewPrincipal("*"),
 			policy.NewActionSet(policy.GetObjectAction),
@@ -80,6 +83,7 @@ func getAnonWriteOnlyObjectPolicy(bucketName, prefix string) *policy.Policy {
 	return &policy.Policy{
 		Version: policy.DefaultVersion,
 		Statements: []policy.Statement{policy.NewStatement(
+			"",
 			policy.Allow,
 			policy.NewPrincipal("*"),
 			policy.NewActionSet(

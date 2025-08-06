@@ -95,7 +95,8 @@ const (
 	AmzMpPartsCount = "x-amz-mp-parts-count"
 
 	// Object date/time of expiration
-	AmzExpiration = "x-amz-expiration"
+	AmzExpiration    = "x-amz-expiration"
+	AmzRequestHostID = "x-amz-id-2"
 
 	// Dummy putBucketACL
 	AmzACL = "x-amz-acl"

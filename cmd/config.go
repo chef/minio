@@ -151,6 +151,7 @@ func saveServerConfig(ctx context.Context, objAPI ObjectLayer, cfg interface{}) 
 	return saveConfig(ctx, objAPI, configFile, data)
 }
 
+// data is optional. If nil it will be loaded from backend.
 func readServerConfig(ctx context.Context, objAPI ObjectLayer) (config.Config, error) {
 	var srvCfg = config.New()
 	configFile := path.Join(minioConfigPrefix, minioConfigFile)

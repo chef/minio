@@ -126,7 +126,7 @@ func enforceFIFOQuotaBucket(ctx context.Context, objectAPI ObjectLayer, bucket s
 		return
 	}
 
-	if cfg.Type != madmin.FIFOQuota {
+	if cfg.Type != "fifo" {
 		return
 	}
 

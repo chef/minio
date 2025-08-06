@@ -561,16 +561,15 @@ func (p *xlStorageDiskIDCheck) StatInfoFile(ctx context.Context, volume, path st
 	return p.storage.StatInfoFile(ctx, volume, path, glob)
 }
 
-func storageTrace(s storageMetric, startTime time.Time, duration time.Duration, path string) madmin.TraceInfo {
+func storageTrace(s storageMetric, startTime time.Time, duration time.Duration, path string, err string) madmin.TraceInfo {
 	return madmin.TraceInfo{
 		TraceType: madmin.TraceStorage,
 		Time:      startTime,
 		NodeName:  globalLocalNodeName,
 		FuncName:  "storage." + s.String(),
-		StorageStats: madmin.TraceStorageStats{
-			Duration: duration,
-			Path:     path,
-		},
+		Duration:  duration,
+		Path:      path,
+		Error:     err,
 	}
 }
 
@@ -585,7 +584,7 @@ func (p *xlStorageDiskIDCheck) updateStorageMetrics(s storageMetric, paths ...st
 		p.apiLatencies[s].Add(float64(duration))
 
 		if trace {
-			globalTrace.Publish(storageTrace(s, startTime, duration, strings.Join(paths, " ")))
+			globalTrace.Publish(storageTrace(s, startTime, duration, strings.Join(paths, " "), ""))
 		}
 	}
 }

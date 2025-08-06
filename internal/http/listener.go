@@ -160,3 +160,10 @@ func newHTTPListener(ctx context.Context, serverAddrs []string) (listener *httpL
 
 	return listener, nil
 }
+
+// TCPOptions specify customizable TCP optimizations on raw socket
+type TCPOptions struct {
+	UserTimeout int              // this value is expected to be in milliseconds
+	Interface   string           // this is a VRF device passed via `--interface` flag
+	Trace       func(msg string) // Trace when starting.
+}
