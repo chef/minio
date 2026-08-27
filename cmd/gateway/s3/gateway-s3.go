@@ -515,12 +515,13 @@ func (l *s3Objects) PutObject(ctx context.Context, bucket string, object string,
 		UserMetadata:         opts.UserDefined,
 		ServerSideEncryption: opts.ServerSideEncryption,
 		UserTags:             tagMap,
-		// Content-Md5 is needed for buckets with object locking,
-		// instead of spending an extra API call to detect this
-		// we can set md5sum to be calculated always.
+		// SendContentMd5 is needed for Object Lock buckets. Use the high-level
+		// Client (not Core) so SendContentMd5:true is actually respected —
+		// Core.PutObject bypasses that flag and passes md5Base64 directly,
+		// which is empty when the caller uses streaming SigV4 (no Content-MD5).
 		SendContentMd5: true,
 	}
-	ui, err := l.Client.PutObject(ctx, bucket, object, data, data.Size(), data.MD5Base64String(), data.SHA256HexString(), putOpts)
+	ui, err := l.Client.Client.PutObject(ctx, bucket, object, data, data.Size(), putOpts)
 	if err != nil {
 		return objInfo, minio.ErrorRespToObjectError(err, bucket, object)
 	}
