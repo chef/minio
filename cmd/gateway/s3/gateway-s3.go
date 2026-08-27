@@ -17,7 +17,10 @@
 package s3
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"math/rand"
@@ -515,13 +518,30 @@ func (l *s3Objects) PutObject(ctx context.Context, bucket string, object string,
 		UserMetadata:         opts.UserDefined,
 		ServerSideEncryption: opts.ServerSideEncryption,
 		UserTags:             tagMap,
-		// SendContentMd5 is needed for Object Lock buckets. Use the high-level
-		// Client (not Core) so SendContentMd5:true is actually respected —
-		// Core.PutObject bypasses that flag and passes md5Base64 directly,
-		// which is empty when the caller uses streaming SigV4 (no Content-MD5).
+		// Content-Md5 is needed for buckets with object locking,
+		// instead of spending an extra API call to detect this
+		// we can set md5sum to be calculated always.
 		SendContentMd5: true,
 	}
-	ui, err := l.Client.Client.PutObject(ctx, bucket, object, data, data.Size(), putOpts)
+
+	// Core.PutObject passes md5Base64 directly to AWS without computing it.
+	// When the caller uses streaming SigV4 (no Content-MD5 header, e.g. Java
+	// AWS SDK / OpenSearch), MD5Base64String() returns "". Object Lock buckets
+	// require Content-MD5, so buffer the data and compute MD5 when missing.
+	md5Base64 := data.MD5Base64String()
+	sha256Hex := data.SHA256HexString()
+	var reader io.Reader = data
+	if md5Base64 == "" {
+		buf, err := io.ReadAll(data)
+		if err != nil {
+			return objInfo, minio.ErrorRespToObjectError(err, bucket, object)
+		}
+		h := md5.New()
+		h.Write(buf)
+		md5Base64 = base64.StdEncoding.EncodeToString(h.Sum(nil))
+		reader = bytes.NewReader(buf)
+	}
+	ui, err := l.Client.PutObject(ctx, bucket, object, reader, data.Size(), md5Base64, sha256Hex, putOpts)
 	if err != nil {
 		return objInfo, minio.ErrorRespToObjectError(err, bucket, object)
 	}
