@@ -650,12 +650,31 @@ func (l *s3Objects) NewMultipartUpload(ctx context.Context, bucket string, objec
 // PutObjectPart puts a part of object in bucket
 func (l *s3Objects) PutObjectPart(ctx context.Context, bucket string, object string, uploadID string, partID int, r *minio.PutObjReader, opts minio.ObjectOptions) (pi minio.PartInfo, e error) {
 	data := r.Reader
+
+	md5Base64 := data.MD5Base64String()
+	sha256Hex := data.SHA256HexString()
+	var reader io.Reader = data
+
+	// AWS S3 requires Content-MD5 on every UploadPart request for Object Lock
+	// buckets. When the caller uses streaming SigV4 (no Content-MD5 header),
+	// MD5Base64String() returns "". Buffer the part and compute MD5 ourselves.
+	if md5Base64 == "" {
+		buf, err := io.ReadAll(data)
+		if err != nil {
+			return pi, minio.ErrorRespToObjectError(err, bucket, object)
+		}
+		h := md5.New()
+		h.Write(buf)
+		md5Base64 = base64.StdEncoding.EncodeToString(h.Sum(nil))
+		reader = bytes.NewReader(buf)
+	}
+
 	putOpts := miniogo.PutObjectPartOptions{
 		SSE:       opts.ServerSideEncryption,
-		Md5Base64: data.MD5Base64String(),
-		Sha256Hex: data.SHA256HexString(),
+		Md5Base64: md5Base64,
+		Sha256Hex: sha256Hex,
 	}
-	info, err := l.Client.PutObjectPart(ctx, bucket, object, uploadID, partID, data, data.Size(), putOpts)
+	info, err := l.Client.PutObjectPart(ctx, bucket, object, uploadID, partID, reader, data.Size(), putOpts)
 	if err != nil {
 		return pi, minio.ErrorRespToObjectError(err, bucket, object)
 	}
